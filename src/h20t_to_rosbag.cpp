@@ -63,6 +63,7 @@ struct MetadataBasic{
     StreamType type;
     ros::Time current_timestamp, next_timestamp;
     double latitude, longitude, relative_altitude, absolute_altitude;
+    double drone_speed_x, drone_speed_y, drone_speed_z;
     double drone_roll, drone_pitch, drone_yaw;
     double gimbal_roll, gimbal_pitch, gimbal_yaw;
 
@@ -82,21 +83,26 @@ struct MetadataBasic{
 
     void toM300MetadataMsg(h20t_to_rosbag::M300Metadata &m300_metadata_msg, std_msgs::Header m300_header){
 
+        // Header
         m300_metadata_msg.header = m300_header;
         
+        // Location related
         m300_metadata_msg.latitude          = latitude;
         m300_metadata_msg.longitude         = longitude;
         m300_metadata_msg.absolute_altitude = absolute_altitude;
         m300_metadata_msg.relative_altitude = relative_altitude;
 
-        m300_metadata_msg.velocity_linear.x = 0.0; 
-        m300_metadata_msg.velocity_linear.y = 0.0;
-        m300_metadata_msg.velocity_linear.z = 0.0;
+        // Drone velocity related
+        m300_metadata_msg.velocity_linear.x = drone_speed_x; 
+        m300_metadata_msg.velocity_linear.y = drone_speed_y;
+        m300_metadata_msg.velocity_linear.z = drone_speed_z;
 
+        // Drone orientation related
         m300_metadata_msg.drone_roll    = drone_roll;
         m300_metadata_msg.drone_pitch   = drone_pitch;
         m300_metadata_msg.drone_yaw     = drone_yaw;
 
+        // Gimbal orientation related
         m300_metadata_msg.gimbal_roll   = gimbal_roll;
         m300_metadata_msg.gimbal_pitch  = gimbal_pitch;
         m300_metadata_msg.gimbal_yaw    = gimbal_yaw;
@@ -179,6 +185,7 @@ int parseSrt(ifstream *fs, StreamType stream_type, MetadataBasic *metadata){
     // Parsed metadata variables
     ros::Time cur_time, next_time;
     double lat, lon, rel_alt, abs_alt;
+    double dr_speed_x, dr_speed_y, dr_speed_z;
     double dr_roll, dr_pitch, dr_yaw;
     double gb_roll, gb_pitch, gb_yaw;
 
@@ -245,69 +252,87 @@ int parseSrt(ifstream *fs, StreamType stream_type, MetadataBasic *metadata){
                                 // [drone_speedx: 0.0 drone_speedy: 0.0 drone_speedz: 0.0] 
                                 std::getline(*fs, line);
 
-                                // [drone_yaw: -129.9 drone_pitch: -6.0 drone_roll: 3.4]  
-                                std::getline(*fs, line);
-
-                                found = line.find("drone_yaw");
+                                found = line.find("drone_speedx");
 
                                 if(found != string::npos){
 
-                                    n_parsed = sscanf(line.c_str(),"[drone_yaw: %lf drone_pitch: %lf drone_roll: %lf]", &argdouble_1, &argdouble_2, &argdouble_3);
-                                    //ROS_INFO("Drone_yaw: %lf Drone_Pitch %lf Drone_Roll %lf", argdouble_1, argdouble_2, argdouble_3);
+                                    n_parsed = sscanf(line.c_str(),"[drone_speedx: %lf drone_speedy: %lf drone_speedz: %lf]", &argdouble_1, &argdouble_2, &argdouble_3);
+                                    //ROS_INFO("Drone_speedx: %lf Drone_speedy %lf Drone_speedz %lf", argdouble_1, argdouble_2, argdouble_3);
 
                                     if(n_parsed == 3){
-                                        
-                                        dr_yaw = argdouble_1;
-                                        dr_pitch = argdouble_2;
-                                        dr_roll = argdouble_3;                                        
 
-                                        // [gb_yaw: -137.9 gb_pitch: -36.4 gb_roll: 0.0]
+                                        dr_speed_x = argdouble_1;
+                                        dr_speed_y = argdouble_2;
+                                        dr_speed_z = argdouble_3;
+
+                                        // [drone_yaw: -129.9 drone_pitch: -6.0 drone_roll: 3.4]  
                                         std::getline(*fs, line);
 
-                                        found = line.find("gb_yaw");
+                                        found = line.find("drone_yaw");
 
                                         if(found != string::npos){
 
-                                            n_parsed = sscanf(line.c_str(),"[gb_yaw: %lf gb_pitch: %lf gb_roll: %lf]", &argdouble_1, &argdouble_2, &argdouble_3);
-                                            //ROS_INFO("Gimbal_yaw: %lf Gimbal_Pitch %lf Gimbal_Roll %lf", argdouble_1, argdouble_2, argdouble_3);
+                                            n_parsed = sscanf(line.c_str(),"[drone_yaw: %lf drone_pitch: %lf drone_roll: %lf]", &argdouble_1, &argdouble_2, &argdouble_3);
+                                            //ROS_INFO("Drone_yaw: %lf Drone_Pitch %lf Drone_Roll %lf", argdouble_1, argdouble_2, argdouble_3);
 
                                             if(n_parsed == 3){
+                                                
+                                                dr_yaw = argdouble_1;
+                                                dr_pitch = argdouble_2;
+                                                dr_roll = argdouble_3;                                        
 
-                                                gb_yaw = argdouble_1;
-                                                gb_pitch = argdouble_2;
-                                                gb_roll = argdouble_3;
+                                                // [gb_yaw: -137.9 gb_pitch: -36.4 gb_roll: 0.0]
+                                                std::getline(*fs, line);
 
-                                                //ROS_INFO("Frame count: %d", frame_count);
+                                                found = line.find("gb_yaw");
 
-                                                metadata[frame_count].current_timestamp = cur_time;
-                                                metadata[frame_count].next_timestamp    = next_time;
+                                                if(found != string::npos){
 
-                                                metadata[frame_count].type = stream_type;
+                                                    n_parsed = sscanf(line.c_str(),"[gb_yaw: %lf gb_pitch: %lf gb_roll: %lf]", &argdouble_1, &argdouble_2, &argdouble_3);
+                                                    //ROS_INFO("Gimbal_yaw: %lf Gimbal_Pitch %lf Gimbal_Roll %lf", argdouble_1, argdouble_2, argdouble_3);
 
-                                                metadata[frame_count].latitude  = lat;
-                                                metadata[frame_count].longitude = lon;
-                                                metadata[frame_count].relative_altitude = rel_alt;
-                                                metadata[frame_count].absolute_altitude = abs_alt;
+                                                    if(n_parsed == 3){
 
-                                                metadata[frame_count].drone_roll  = dr_roll;
-                                                metadata[frame_count].drone_pitch = dr_pitch;
-                                                metadata[frame_count].drone_yaw   = dr_yaw;
+                                                        gb_yaw = argdouble_1;
+                                                        gb_pitch = argdouble_2;
+                                                        gb_roll = argdouble_3;
 
-                                                metadata[frame_count].gimbal_roll  = gb_roll;
-                                                metadata[frame_count].gimbal_pitch = gb_pitch;
-                                                metadata[frame_count].gimbal_yaw   = gb_yaw;
+                                                        //ROS_INFO("Frame count: %d", frame_count);
 
-                                                frame_count++;
+                                                        metadata[frame_count].current_timestamp = cur_time;
+                                                        metadata[frame_count].next_timestamp    = next_time;
 
-                                                if(frame_num != frame_count) frame_mismatch = true;
+                                                        metadata[frame_count].type = stream_type;
+
+                                                        metadata[frame_count].latitude  = lat;
+                                                        metadata[frame_count].longitude = lon;
+                                                        metadata[frame_count].relative_altitude = rel_alt;
+                                                        metadata[frame_count].absolute_altitude = abs_alt;
+
+                                                        metadata[frame_count].drone_speed_x = dr_speed_x;
+                                                        metadata[frame_count].drone_speed_y = dr_speed_y;
+                                                        metadata[frame_count].drone_speed_z = dr_speed_z;
+
+                                                        metadata[frame_count].drone_roll  = dr_roll;
+                                                        metadata[frame_count].drone_pitch = dr_pitch;
+                                                        metadata[frame_count].drone_yaw   = dr_yaw;
+
+                                                        metadata[frame_count].gimbal_roll  = gb_roll;
+                                                        metadata[frame_count].gimbal_pitch = gb_pitch;
+                                                        metadata[frame_count].gimbal_yaw   = gb_yaw;
+
+                                                        frame_count++;
+
+                                                        if(frame_num != frame_count) frame_mismatch = true;
+                                                    }
+                                                    
+                                                }
                                             }
-                                             
                                         }
                                     }
                                 }
                             }
                         }
-
                     }
                 }
             }
