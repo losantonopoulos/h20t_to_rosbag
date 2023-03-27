@@ -17,38 +17,63 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <math.h>
 #include <limits>
 #include <sstream>
 
 // In order to produce bags
 #include <rosbag/bag.h>
 
+// image_transport includes
+#include <image_transport/image_transport.h>
+
 // OpenCV includes
 #include <opencv2/core.hpp>
-#include "opencv2/highgui.hpp"
-#include "opencv2/imgproc.hpp"
-#include <image_transport/image_transport.h>
-#include <cv_bridge/cv_bridge.h>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>  
 #include <opencv2/core/mat.hpp>
 #include <opencv2/opencv.hpp>
+#include <cv_bridge/cv_bridge.h>
+
+// tf2 includes
+#include <tf2/LinearMath/Quaternion.h>
 
 // Messages
+
+// std_msgs
 #include <std_msgs/Int32.h>
-#include "std_msgs/String.h"
+#include <std_msgs/String.h>
 #include <std_msgs/UInt8.h>
 #include <std_msgs/Float32.h>
 
+// sensor_msgs
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/NavSatFix.h>
+
+// geometry_msgs
 #include <geometry_msgs/Quaternion.h>
 
-#include <h20t_to_rosbag/M300Metadata.h>
+// sense_msgs
+#include <sense_msgs/UASComposite.h>
+#include <sense_msgs/PositionWGS84Stamped.h>
+#include <sense_msgs/RPYStamped.h>
+#include <sense_msgs/RPY.h>
 
 using namespace std;
 using namespace cv;
+
+double degToRad(double degrees)
+{
+    return (degrees * (double)M_PI) / 180.0;
+}
+
+double radToDeg(double radians)
+{
+    return (radians * 180.0) / (double)M_PI;
+}
 
 enum StreamType{
 
@@ -65,7 +90,10 @@ struct MetadataBasic{
     double latitude, longitude, relative_altitude, absolute_altitude;
     double drone_speed_x, drone_speed_y, drone_speed_z;
     double drone_roll, drone_pitch, drone_yaw;
-    double gimbal_roll, gimbal_pitch, gimbal_yaw;
+    sense_msgs::RPY gimbal_rpy[1];
+
+    tf2::Quaternion uas_quaternion;
+    tf2::Quaternion gimbal_quaternion[1];
 
     void toNavSatFixMsg(sensor_msgs::NavSatFix &gnss_msg, std_msgs::Header gnss_header){
 
@@ -81,32 +109,38 @@ struct MetadataBasic{
         gnss_msg.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
     }
 
-    void toM300MetadataMsg(h20t_to_rosbag::M300Metadata &m300_metadata_msg, std_msgs::Header m300_header){
+    void toUASCompositeMsg(sense_msgs::UASComposite &uas_composite_msg, std_msgs::Header msg_header){
 
         // Header
-        m300_metadata_msg.header = m300_header;
+        uas_composite_msg.header = msg_header;
         
         // Location related
-        m300_metadata_msg.latitude          = latitude;
-        m300_metadata_msg.longitude         = longitude;
-        m300_metadata_msg.absolute_altitude = absolute_altitude;
-        m300_metadata_msg.relative_altitude = relative_altitude;
+        uas_composite_msg.position_wgs84.latitude          = latitude;
+        uas_composite_msg.position_wgs84.longitude         = longitude;
+        uas_composite_msg.position_wgs84.absolute_altitude = absolute_altitude;
+        uas_composite_msg.position_wgs84.relative_altitude = relative_altitude;
 
         // Drone velocity related
-        m300_metadata_msg.velocity_linear.x = drone_speed_x; 
-        m300_metadata_msg.velocity_linear.y = drone_speed_y;
-        m300_metadata_msg.velocity_linear.z = drone_speed_z;
+        uas_composite_msg.velocity_linear.x = drone_speed_x; 
+        uas_composite_msg.velocity_linear.y = drone_speed_y;
+        uas_composite_msg.velocity_linear.z = drone_speed_z;
 
         // Drone orientation related
-        m300_metadata_msg.drone_roll    = drone_roll;
-        m300_metadata_msg.drone_pitch   = drone_pitch;
-        m300_metadata_msg.drone_yaw     = drone_yaw;
+        uas_composite_msg.rotation_rpy.roll    = drone_roll;
+        uas_composite_msg.rotation_rpy.pitch   = drone_pitch;
+        uas_composite_msg.rotation_rpy.yaw     = drone_yaw;
+        uas_composite_msg.rotation_quaternion.x   = uas_quaternion.getX();
+        uas_composite_msg.rotation_quaternion.y   = uas_quaternion.getY();
+        uas_composite_msg.rotation_quaternion.z   = uas_quaternion.getZ();
+        uas_composite_msg.rotation_quaternion.w   = uas_quaternion.getW();
 
         // Gimbal orientation related
-        m300_metadata_msg.gimbal_roll   = gimbal_roll;
-        m300_metadata_msg.gimbal_pitch  = gimbal_pitch;
-        m300_metadata_msg.gimbal_yaw    = gimbal_yaw;
-    } 
+        uas_composite_msg.gimbal_rotation_rpy[0]   = gimbal_rpy[0];
+        uas_composite_msg.gimbal_rotation_quaternion[0].x   = gimbal_quaternion[0].getX();
+        uas_composite_msg.gimbal_rotation_quaternion[0].y   = gimbal_quaternion[0].getY();
+        uas_composite_msg.gimbal_rotation_quaternion[0].z   = gimbal_quaternion[0].getZ();
+        uas_composite_msg.gimbal_rotation_quaternion[0].w   = gimbal_quaternion[0].getW();
+    }
 };
 
 struct MetadataInfo{
@@ -299,6 +333,8 @@ int parseSrt(ifstream *fs, StreamType stream_type, MetadataBasic *metadata){
 
                                                         //ROS_INFO("Frame count: %d", frame_count);
 
+                                                        // WARNING: The values coming from the UAS are in NED.  
+
                                                         metadata[frame_count].current_timestamp = cur_time;
                                                         metadata[frame_count].next_timestamp    = next_time;
 
@@ -316,10 +352,12 @@ int parseSrt(ifstream *fs, StreamType stream_type, MetadataBasic *metadata){
                                                         metadata[frame_count].drone_roll  = dr_roll;
                                                         metadata[frame_count].drone_pitch = dr_pitch;
                                                         metadata[frame_count].drone_yaw   = dr_yaw;
+                                                        metadata[frame_count].uas_quaternion.setRPY(degToRad(dr_roll), degToRad(dr_pitch), degToRad(dr_yaw));
 
-                                                        metadata[frame_count].gimbal_roll  = gb_roll;
-                                                        metadata[frame_count].gimbal_pitch = gb_pitch;
-                                                        metadata[frame_count].gimbal_yaw   = gb_yaw;
+                                                        metadata[frame_count].gimbal_rpy[0].roll  = gb_roll;
+                                                        metadata[frame_count].gimbal_rpy[0].pitch = gb_pitch;
+                                                        metadata[frame_count].gimbal_rpy[0].yaw   = gb_yaw;
+                                                        metadata[frame_count].gimbal_quaternion[0].setRPY(degToRad(gb_roll), degToRad(gb_pitch), degToRad(gb_yaw));
 
                                                         frame_count++;
 
@@ -585,22 +623,40 @@ int main(int argc, char* argv[]){
     cv_bridge::CvImage img_bridge;
     sensor_msgs::Image img_msg;
 
-    h20t_to_rosbag::M300Metadata m300_metadata_msg;
+    //h20t_to_rosbag::M300Metadata m300_metadata_msg;
 
+    sense_msgs::UASComposite uas_composite_msg;
+    sense_msgs::RPY gimbal_rpy;
+
+    gimbal_rpy.roll  = 0.0;
+    gimbal_rpy.pitch = 0.0;
+    gimbal_rpy.yaw   = 0.0;
+
+    uas_composite_msg.gimbal_rotation_rpy.push_back(gimbal_rpy);
+
+    geometry_msgs::Quaternion gimbal_quat;
+
+    gimbal_quat.x = 0.0;
+    gimbal_quat.y = 0.0;
+    gimbal_quat.z = 0.0;
+    gimbal_quat.w = 1.0;
+
+    uas_composite_msg.gimbal_rotation_quaternion.push_back(gimbal_quat);
+    
     sensor_msgs::NavSatFix gnss_msg;
 
-    std_msgs::Header header_wide, header_thermal, header_zoom, header_m300, header_gnss; // empty header
+    std_msgs::Header header_wide, header_thermal, header_zoom, header_uas, header_gnss; // empty header
 
     header_wide.seq     = 0;
     header_thermal.seq  = 0;
     header_zoom.seq     = 0;
-    header_m300.seq     = 0;
+    header_uas.seq      = 0;
     header_gnss.seq     = 0;
 
     header_wide.frame_id    = "h20t_wide";
     header_thermal.frame_id = "h20t_thermal";
     header_zoom.frame_id    = "h20t_zoom";
-    header_m300.frame_id    = "m300";
+    header_uas.frame_id     = "m300_NED";
     header_gnss.frame_id    = "gnss";
 
     int counter = 0;
@@ -629,17 +685,17 @@ int main(int argc, char* argv[]){
 
                     if(m300_metadata_source == StreamType::WIDE){
 
-                        header_m300.stamp = seq->current_timestamp;
+                        header_uas.stamp = seq->current_timestamp;
                         header_gnss.stamp = seq->current_timestamp;
 
-                        seq->toM300MetadataMsg(m300_metadata_msg, header_m300);
+                        seq->toUASCompositeMsg(uas_composite_msg, header_uas);
                                                 
-                        bag.write("m300_metadata", header_m300.stamp + time_offset, m300_metadata_msg);
-                        header_m300.seq++;
+                        bag.write("/m300/uas_composite", header_uas.stamp + time_offset, uas_composite_msg);
+                        header_uas.seq++;
 
                         seq->toNavSatFixMsg(gnss_msg, header_gnss);
 
-                        bag.write("m300_fix", header_gnss.stamp + time_offset, gnss_msg);
+                        bag.write("/m300/fix", header_gnss.stamp + time_offset, gnss_msg);
                         header_gnss.seq++;
                     }
 
@@ -654,7 +710,7 @@ int main(int argc, char* argv[]){
 
                     img_bridge.toImageMsg(img_msg);                
 
-                    bag.write("wide", header_wide.stamp + time_offset, img_msg);
+                    bag.write("/h20t/wide/image_raw", header_wide.stamp + time_offset, img_msg);
 
                     header_wide.seq++;
 
@@ -676,17 +732,17 @@ int main(int argc, char* argv[]){
 
                     if(m300_metadata_source == StreamType::THERMAL){
 
-                        header_m300.stamp = seq->current_timestamp;
+                        header_uas.stamp = seq->current_timestamp;
                         header_gnss.stamp = seq->current_timestamp;
 
-                        seq->toM300MetadataMsg(m300_metadata_msg, header_m300);
+                        seq->toUASCompositeMsg(uas_composite_msg, header_uas);
                                                 
-                        bag.write("m300_metadata", header_m300.stamp + time_offset, m300_metadata_msg);
-                        header_m300.seq++;
+                        bag.write("/m300/uas_composite", header_uas.stamp + time_offset, uas_composite_msg);
+                        header_uas.seq++;
 
                         seq->toNavSatFixMsg(gnss_msg, header_gnss);
 
-                        bag.write("m300_fix", header_gnss.stamp + time_offset, gnss_msg);
+                        bag.write("/m300/fix", header_gnss.stamp + time_offset, gnss_msg);
                         header_gnss.seq++;
                     }
 
@@ -701,7 +757,7 @@ int main(int argc, char* argv[]){
 
                     img_bridge.toImageMsg(img_msg);  
 
-                    bag.write("thermal", header_thermal.stamp + time_offset, img_msg);
+                    bag.write("/h20t/thermal/image_raw", header_thermal.stamp + time_offset, img_msg);
 
                     header_thermal.seq = header_thermal.seq + 1;
 
@@ -723,17 +779,17 @@ int main(int argc, char* argv[]){
 
                     if(m300_metadata_source == StreamType::ZOOM){
 
-                        header_m300.stamp = seq->current_timestamp;
+                        header_uas.stamp = seq->current_timestamp;
                         header_gnss.stamp = seq->current_timestamp;
 
-                        seq->toM300MetadataMsg(m300_metadata_msg, header_m300);
+                        seq->toUASCompositeMsg(uas_composite_msg, header_uas);
                                                 
-                        bag.write("m300_metadata", header_m300.stamp + time_offset, m300_metadata_msg);
-                        header_m300.seq++;
+                        bag.write("/m300/uas_composite", header_uas.stamp + time_offset, uas_composite_msg);
+                        header_uas.seq++;
 
                         seq->toNavSatFixMsg(gnss_msg, header_gnss);
 
-                        bag.write("m300_fix", header_gnss.stamp + time_offset, gnss_msg);
+                        bag.write("/m300/fix", header_gnss.stamp + time_offset, gnss_msg);
                         header_gnss.seq++;
                     }
 
@@ -748,7 +804,7 @@ int main(int argc, char* argv[]){
 
                     img_bridge.toImageMsg(img_msg);  
 
-                    bag.write("zoom", header_zoom.stamp + time_offset, img_msg);    
+                    bag.write("/h20t/zoom/image_raw", header_zoom.stamp + time_offset, img_msg);    
 
                     header_zoom.seq = header_zoom.seq + 1;
 
